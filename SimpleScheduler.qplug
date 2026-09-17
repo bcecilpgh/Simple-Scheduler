@@ -4,8 +4,8 @@
 -- by dev/harness/build.js; the `#include` lines below are build directives, not comments.
 PluginInfo = {
   Name = "Fresh AV Labs~Simple Scheduler",
-  Version = "1.3.0",
-  BuildVersion = "1.3.0.0",
+  Version = "1.3.1",
+  BuildVersion = "1.3.1.0",
   Id = "fresh-av-labs.simple-scheduler",
   Author = "Fresh AV Labs",
   Description = "Time-based trigger scheduler with day-of-week selection. Fires a trigger output when the current time matches a configured schedule.",
@@ -706,9 +706,9 @@ if Controls then
       BackupAdvisory = "Bank not found or not script-accessible"
       local why
       if BackupComp ~= nil then
-        why = "absent from the last scan but Component.New still returns a handle — renamed, deleted, or Script Access set to None"
+        why = "absent from the last scan but Component.New still returns a handle; renamed, deleted, or Script Access set to None"
       elseif InLastScan(sel) then
-        why = "in last scan but Component.New failed — check Script Access"
+        why = "in last scan but Component.New failed; check Script Access"
       else
         why = "absent from last scan"
       end
@@ -737,7 +737,7 @@ if Controls then
     if wd == nil then Log("Backup window day '" .. tostring(dayStr) .. "' unrecognized; window disabled until set") end
   end
 
-  -- Startup-only parse of each slot's Last Saved string → epoch (isdst=false).
+  -- Startup-only parse of each slot's Last Saved string to epoch (isdst=false).
   local function ParseLastSavedEpochs()
     for i = 1, BACKUP_SLOTS do
       local s = Controls["Backup_Last_Saved"][i].String
