@@ -1,0 +1,6 @@
+*.qplugx binary
+# The published .qplug must be the same bytes everyone else got. build.js emits it with CRLF
+# terminators; without -text git stores an LF blob, so a clone on Linux or macOS produces a
+# file that differs from the one in the release. Measured 2026-09-17: the blob came back
+# 8ec116de against c608535d on disk.
+*.qplug -text

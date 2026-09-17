@@ -1,0 +1,917 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Brandon Cecil. See LICENSE.
+-- Fresh AV Labs Simple Scheduler for Q-SYS. Fragments are assembled into this skeleton
+-- by dev/harness/build.js; the `#include` lines below are build directives, not comments.
+PluginInfo = {
+  Name = "Fresh AV Labs~Simple Scheduler",
+  Version = "1.3.0",
+  BuildVersion = "1.3.0.0",
+  Id = "fresh-av-labs.simple-scheduler",
+  Author = "Fresh AV Labs",
+  Description = "Time-based trigger scheduler with day-of-week selection. Fires a trigger output when the current time matches a configured schedule.",
+  ShowDebug = true
+}
+
+function GetColor(props)
+  return {196, 224, 79} -- #C4E04F Fresh AV Labs Green
+end
+
+function GetPrettyName(props)
+  return "Simple Scheduler"
+end
+
+PageNames = {"Schedules", "Snapshot Backup"}
+
+-- WARNING: guarded read, not `props["Backup_Slot_Count"].Value`. A design saved before this
+-- property existed hands over a props table with NO such key, and a bare .Value there kills
+-- the whole design-time pass. Clamped because Min/Max only bound the QDS spinner -- a saved
+-- or hand-edited design can still present an out-of-range value.
+function BackupSlotCount(props)
+  local p = props and props["Backup_Slot_Count"]
+  local n = (p and p.Value) or 7
+  if n < 2 then n = 2 elseif n > 12 then n = 12 end
+  return n
+end
+
+function GetPages(props)
+  local pages = {}
+  for _, name in ipairs(PageNames) do
+    pages[#pages + 1] = {name = name}
+  end
+  return pages
+end
+
+function GetProperties()
+  return {
+    {
+      Name = "Schedule_Count",
+      Type = "integer",
+      Min = 1,
+      Max = 16,
+      Value = 1
+    },
+    {
+      Name = "Backup_Slot_Count",
+      Type = "integer",
+      Min = 2,
+      Max = 12,
+      Value = 4
+    },
+    {
+      Name = "Debug_Level",
+      Type = "enum",
+      Choices = {"Standard", "Verbose"},
+      Value = "Standard"
+    }
+  }
+end
+
+function GetControls(props)
+  local ctrls = {}
+  local count = props["Schedule_Count"].Value
+  local slots = BackupSlotCount(props)
+
+  table.insert(ctrls, {
+    Name = "Status",
+    ControlType = "Indicator",
+    IndicatorType = "Status",
+    Count = 1,
+    UserPin = true,
+    PinStyle = "Output"
+  })
+
+  table.insert(ctrls, {
+    Name = "Current_Time",
+    ControlType = "Indicator",
+    IndicatorType = "Text",
+    Count = 1,
+    UserPin = true,
+    PinStyle = "Output"
+  })
+
+  -- Ships ON: an unarmed schedule is inert and nothing on screen says why.
+  table.insert(ctrls, {
+    Name = "Enable",
+    ControlType = "Button",
+    ButtonType = "Toggle",
+    DefaultValue = true,
+    Count = count,
+    UserPin = true,
+    PinStyle = "Both"
+  })
+
+  table.insert(ctrls, {
+    Name = "Hour",
+    ControlType = "Text",
+    Count = count,
+    UserPin = true,
+    PinStyle = "Both"
+  })
+
+  table.insert(ctrls, {
+    Name = "Minute",
+    ControlType = "Text",
+    Count = count,
+    UserPin = true,
+    PinStyle = "Both"
+  })
+
+  local dayNames = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+  for _, day in ipairs(dayNames) do
+    table.insert(ctrls, {
+      Name = day,
+      ControlType = "Button",
+      ButtonType = "Toggle",
+      Count = count,
+      UserPin = true,
+      PinStyle = "Both"
+    })
+  end
+
+  table.insert(ctrls, {
+    Name = "Trigger",
+    ControlType = "Button",
+    ButtonType = "Trigger",
+    Count = count,
+    UserPin = true,
+    PinStyle = "Output"
+  })
+
+  table.insert(ctrls, {
+    Name = "Schedule_Name",
+    ControlType = "Text",
+    Count = count,
+    UserPin = true,
+    PinStyle = "Both"
+  })
+
+  table.insert(ctrls, {
+    Name = "Schedule_Summary",
+    ControlType = "Indicator",
+    IndicatorType = "Text",
+    Count = count,
+    UserPin = true,
+    PinStyle = "Output"
+  })
+
+  table.insert(ctrls, { Name = "Backup_Component", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Backup_Rescan", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Input" })
+  table.insert(ctrls, { Name = "Backup_Day", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Backup_Hour", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Backup_Minute", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  -- Ships OFF, and selecting a bank arms every slot (src/runtime.lua).
+  table.insert(ctrls, { Name = "Backup_Enable", ControlType = "Button", ButtonType = "Toggle", DefaultValue = false, Count = slots, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Backup_Save_Now", ControlType = "Button", ButtonType = "Trigger", Count = slots, UserPin = true, PinStyle = "Input" })
+  -- WARNING: ControlType "Text", never "Indicator" -- an Indicator's value does not survive
+  -- a Core reboot, and these strings are the rotation's only memory.
+  table.insert(ctrls, { Name = "Backup_Last_Saved", ControlType = "Text", Count = slots, UserPin = true, PinStyle = "Output" })
+
+  return ctrls
+end
+
+function GetControlLayout(props)
+local FRESH_LOGO_STACKED = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyBpZD0iTGF5ZXJfMSIgZGF0YS1uYW1lPSJMYXllciAxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzU3Ljk2MTQgOTIzLjQyOTMiPgogIDxnPgogICAgPHBhdGggZD0iTTE4MS4wOTY3LDgyNS4yNTQydjEzLjYyMjhoLTUyLjIwNzh2MjguMDQ5N2g0Ni43MDU3djEzLjY5MDhoLTQ2LjcwNTd2NDEuMjY5MmgtMTYuNDQxOXYtOTYuNjMyNWg2OC42NDk3WiIvPgogICAgPHBhdGggZD0iTTI3Mi41MTYyLDg1My4yMzgzYzAsMTguMDUxMi0xMi45NTI0LDI3Ljc4LTI4Ljg1NjIsMjcuNzhoLTguNTIyOGwzNy4xMDkzLDM4Ljg1NDZ2Mi4wMTM4aC0xNy45ODMybC0zOS4yNTc5LTQxLjEzNTZoLTEuMzQyMXY0MS4xMzU2aC0xNi4zMDU4di05Ni42MzI1aDQ0LjQyMzVjMTcuMTEyMywwLDMwLjczNTEsOS43OTY5LDMwLjczNTEsMjcuOTg0MVpNMjM5LjI5ODUsODY4LjI3YzEwLjEzMzMsMCwxNy4xNzkxLTQuOTY3NywxNy4xNzkxLTE0LjY5NjUsMC05LjY2MzMtNy4wNDU4LTE0LjY5NjUtMTcuMTc5MS0xNC42OTY1aC0yNS42MzUxdjI5LjM5M2gyNS42MzUxWiIvPgogICAgPHBhdGggZD0iTTM1Ny45NjM2LDgyNS4yNTQydjEzLjYyMjhoLTUyLjk0NzV2MjcuNDQ0OGg0Ni4yMzY5djEzLjYyMjhoLTQ2LjIzNjl2MjguMzE5M2g1My44ODY0djEzLjYyMjhoLTcwLjMyN3YtOTYuNjMyNWg2OS4zODgxWiIvPgogICAgPHBhdGggZD0iTTQwOS4xODY0LDgyMy43MTE3YzIzLjU1MzMsMCwzNy4wNDI1LDEwLjkzODYsMzguMjQ5OCwyOS40NTg2djIuMDEzOGgtMTUuNTY4NmMtLjYwMzYtMTMuNDIxMi05Ljk5ODUtMTguNTIyNC0yMi40MTQtMTguNTIyNC0xMi41NDc5LDAtMjAuMzMyMiw1LjAzMzItMjAuMzMyMiwxMy44MjQ0LDAsOC44NTkyLDYuNTA5LDEyLjQxNTUsMTcuODQ5NiwxNC4zNjEzbDExLjAwNTQsMS44MTIyYzE5LjE5MjksMy4yMjExLDMwLjEzMDMsMTAuNDY3MywzMC4xMzAzLDI3Ljk4MTYsMCwxNy40NDg4LTEyLjg4NDMsMjguNzg4MS0zNi45NzQ1LDI4Ljc4ODFzLTM5LjMyNDctMTEuMzM5NC00MC40NjUyLTMwLjEyOXYtMi4wMTM4aDE1LjQzNWMxLjQwODksMTMuODI0NCwxMS42MDksMTkuMTkyOSwyNC44Mjg2LDE5LjE5MjlzMjEuMDcwNy01LjM2ODUsMjEuMDcwNy0xNS4wMzE3YzAtOS43MzEzLTYuOTExLTEyLjk1MjQtMTguNTg4LTE0Ljg5ODFsLTExLjAwNTQtMS44Nzc4Yy0xOC45OTAxLTMuMjIxMS0yOS4zOTE4LTExLjQ3NTQtMjkuMzkxOC0yNy44NTA1LDAtMTYuMzA3LDEyLjY4MjctMjcuMTA5NiwzNi4xNzA0LTI3LjEwOTZaIi8+CiAgICA8cGF0aCBkPSJNNDc4Ljg2MjQsODI1LjI1NDJ2NDAuODY4NGgzOS4xODk5di00MC44Njg0aDE2LjUwODd2OTYuNjMyNWgtMTYuNTA4N3YtNDEuNDcwOWgtMzkuMTg5OXY0MS40NzA5aC0xNi41MDg3di05Ni42MzI1aDE2LjUwODdaIi8+CiAgICA8cGF0aCBkPSJNNjg2LjM5NjQsODI1LjI1NDJsMzEuMDAzNSw5NC42MTg3djIuMDEzOGgtMTYuMTczNGwtNy45MTc5LTI1LjA5ODJoLTM1LjcwMDNsLTcuOTE5MSwyNS4wOTgyaC0xNS43NzAydi0yLjAxMzhsMzEuMDAzNS05NC42MTg3aDIxLjQ3MzlaTTY4OS40ODM5LDg4Mi44OTg1bC0xMy40ODkyLTQyLjY4MDZoLTEuMDczN2wtMTMuNDg4LDQyLjY4MDZoMjguMDUwOVoiLz4KICAgIDxwYXRoIGQ9Ik03MzguODI2NCw4MjUuMjU0MmwyNS4wOTgyLDgxLjA2MzloMS4wNzM3bDI1LjA5Ny04MS4wNjM5aDE1LjkwMzh2Mi4wMTM4bC0zMS4wMDIzLDk0LjYxODdoLTIxLjQ3MzlsLTMxLjAwMjMtOTQuNjE4N3YtMi4wMTM4aDE2LjMwNThaIi8+CiAgICA8cGF0aCBkPSJNOTI2LjQzMDMsODI1LjI1NDJ2ODIuMzM5M2g1Mi4yMDc4djE0LjI5MzNoLTY4Ljc4MzN2LTk2LjYzMjVoMTYuNTc1NVoiLz4KICAgIDxwYXRoIGQ9Ik0xMDQwLjc5OTQsODI1LjI1NDJsMzEuMDAyMyw5NC42MTg3djIuMDEzOGgtMTYuMTcyMmwtNy45MTc5LTI1LjA5ODJoLTM1LjcwMDNsLTcuOTE5MSwyNS4wOTgyaC0xNS43Njl2LTIuMDEzOGwzMS4wMDIzLTk0LjYxODdoMjEuNDczOVpNMTA0My44ODU3LDg4Mi44OTg1bC0xMy40ODgtNDIuNjgwNmgtMS4wNzM3bC0xMy40ODgsNDIuNjgwNmgyOC4wNDk3WiIvPgogICAgPHBhdGggZD0iTTExNTYuMzA5MSw4NDkuNDEyNGMwLDE1LjQzNS0xMC4wNjUzLDIwLjQ2ODItMTUuNTAxOCwyMS43NDM1djEuMDczN2M2LjE3NSwxLjQwODksMTcuNTgyNCw2LjMwNjEsMTcuNTgyNCwyMy4wMTY0LDAsMTcuODQ5Ni0xNC4wOTE2LDI2LjY0MDctMzEuODA3NiwyNi42NDA3aC00My4yODQydi05Ni42MzI1aDQyLjU0NThjMTcuMzEyNywwLDMwLjQ2NTUsNy43ODMxLDMwLjQ2NTUsMjQuMTU4MVpNMTEyMy41NjE0LDg2Ni4wNTQ2YzkuNzMwMSwwLDE2Ljk3ODctMy41NTYzLDE2Ljk3ODctMTMuNTU0OCwwLTEwLjA2NjUtNy4yNDg3LTEzLjYyMjgtMTYuOTc4Ny0xMy42MjI4aC0yMy45NTY1djI3LjE3NzZoMjMuOTU2NVpNMTEyNC4yOTk4LDkwOC4yNjM5YzEwLjMzNDksMCwxNy44NTA4LTMuODIzNSwxNy44NTA4LTE0LjI5MzNzLTcuNTE1OS0xNC4yOTMzLTE3Ljg1MDgtMTQuMjkzM2gtMjQuNjk1djI4LjU4NjVoMjQuNjk1WiIvPgogICAgPHBhdGggZD0iTTEyMDYuNTk0Miw4MjMuNzExN2MyMy41NTMzLDAsMzcuMDQyNSwxMC45Mzg2LDM4LjI0OTgsMjkuNDU4NnYyLjAxMzhoLTE1LjU2ODZjLS42MDM2LTEzLjQyMTItOS45OTg1LTE4LjUyMjQtMjIuNDE0LTE4LjUyMjQtMTIuNTQ3OSwwLTIwLjMzMjIsNS4wMzMyLTIwLjMzMjIsMTMuODI0NCwwLDguODU5Miw2LjUwOSwxMi40MTU1LDE3Ljg0OTYsMTQuMzYxM2wxMS4wMDU0LDEuODEyMmMxOS4xOTI5LDMuMjIxMSwzMC4xMzAzLDEwLjQ2NzMsMzAuMTMwMywyNy45ODE2LDAsMTcuNDQ4OC0xMi44ODQzLDI4Ljc4ODEtMzYuOTc0NSwyOC43ODgxcy0zOS4zMjQ3LTExLjMzOTQtNDAuNDY1Mi0zMC4xMjl2LTIuMDEzOGgxNS40MzVjMS40MDg5LDEzLjgyNDQsMTEuNjA5LDE5LjE5MjksMjQuODI4NiwxOS4xOTI5czIxLjA3MDctNS4zNjg1LDIxLjA3MDctMTUuMDMxN2MwLTkuNzMxMy02LjkxMS0xMi45NTI0LTE4LjU4OC0xNC44OTgxbC0xMS4wMDU0LTEuODc3OGMtMTguOTkwMS0zLjIyMTEtMjkuMzkxOC0xMS40NzU0LTI5LjM5MTgtMjcuODUwNSwwLTE2LjMwNywxMi42ODI3LTI3LjEwOTYsMzYuMTcwNC0yNy4xMDk2WiIvPgogIDwvZz4KICA8Zz4KICAgIDxwYXRoIGQ9Ik05NDYuMDcyNSw0MS44MDkxYy0yMy4xMjQxLTIzLjEyNTItNTUuNDQ3MS0zNy4wNzEzLTkxLjAyMDYtMzUuODUxMy02Ni4zMTMsMi4yODc0LTExOC4zMTU0LDU3Ljk5MDUtMTE4LjMxNTQsMTI0LjM0NzN2MTQ1LjgwMzRjMCw2NS44NjM5LDUxLjIzMjYsMTIxLjM1MTcsMTE3LjAzMTcsMTI0LjI4MjYsNzAuMjcwNiwzLjEyMywxMjguMjIwMy01Mi45MDE3LDEyOC4yMjAzLTEyMi40ODYxdi0xNDkuMzk2NWMwLTMzLjg2MjYtMTMuNzEyMi02NC41MTY1LTM1LjkxNjEtODYuNjk5NVpNMTIyMy42ODgyLDYuMDIwNWMtNjguODU4NSwzLjA4MTMtMTIyLjQ4NzEsNjEuMTgwNC0xMjIuNDg3MSwxMzAuMTAyNXYxNTguODcyMWMwLDcuMTY3My42MjA0LDE0LjIwNTIsMS43NTQ4LDIxLjA3MTd2LjA0MThjNy44MDc2LDgzLjU5NzMtNzcuMjQ0Nyw5OS43OTEyLTc3LjI0NDcsOTkuNzkxMi02NS4wMDc0LDIuNzU5Ni0xMTguNDQyOCw1NC45OTY5LTEyMi41Mjg5LDExOS45NDE3LTQuNzcwMiw3NS42MTc0LDU1Ljk2LDEzOC4yNzI2LDEzMC45MTUxLDEzNi42NjgyLDY3LjU5NjctMS40NTM5LDEyMy4yOTk3LTU2LjQ5NDcsMTI1LjUwMjYtMTI0LjA2OTUuNTU1Ny0xNy4zNy0yLjMzMjQtMzMuOTY5MS04LjAyMTctNDkuMjIwOS00Ljg3NjgtMTMuMDA2MS0xLjU4MzUtMjcuNjgxMyw3LjgyODUtMzcuOTA2OWwyNC43NzEzLTI2Ljg4NzRjOC4wMDA4LTguNjYzMSwxOS42Mzc2LTEzLjA5MTcsMzEuMzgwOS0xMS44MDkxLDcuNjE2NS44MTI2LDE1LjQ0NS45ODM5LDIzLjQyMzkuNDA3NCw2Ny4zODI2LTQuODEzLDExOC45Nzg2LTYyLjE2NDMsMTE4Ljk3ODYtMTI5LjcxNjF2LTE1OS4wNDU1YzAtNzIuODgwOC02MC42ODc0LTEzMS41MzU2LTEzNC4yNzMyLTEyOC4yNDEyWiIvPgogICAgPHBhdGggZD0iTTMzOS4yMTUsNjc4LjQyNzljLTEwOC4zMDgxLDAtMTkzLjY5NzgtMzIuMTE4My0yNTMuODAyMy05NS40NjQ5QzI4LjczNjIsNTIzLjIzMDMsMCw0NDEuMjIwNSwwLDMzOS4yMTUsMCwxNTIuMTcwNywxNTIuMTcwNywwLDMzOS4yMTUsMHMzMzkuMjEyOSwxNTIuMTcwNywzMzkuMjEyOSwzMzkuMjE1djI0MC41MDU4YzAsNTQuMzQ1Mi00NC4wNTQ4LDk4LjQtOTguNCw5OC40cy05OC40LTQ0LjA1NDgtOTguNC05OC40di0yNDAuNTA1OGMwLTc4LjUyNzQtNjMuODg1Ni0xNDIuNDE1MS0xNDIuNDEzLTE0Mi40MTUxcy0xNDIuNDE1MSw2My44ODc3LTE0Mi40MTUxLDE0Mi40MTUxYzAsMzQuMzE1OSw1LjQ0MzksODAuOTU5LDMxLjM3NjcsMTA4LjI5MTMsMjEuNDgzMiwyMi42NDA1LDU4Ljg0MjgsMzQuMTIxNiwxMTEuMDM4NCwzNC4xMjE2LDU0LjM0NTIsMCw5OC40LDQ0LjA1NDgsOTguNCw5OC40cy00NC4wNTQ4LDk4LjQtOTguNCw5OC40WiIvPgogIDwvZz4KPC9zdmc+"
+  local layout = {}
+  local graphics = {}
+  local count = props["Schedule_Count"].Value
+  local slots = BackupSlotCount(props)
+
+  local Colors = {
+    Primary    = {37, 99, 235},
+    Danger     = {220, 38, 38},
+    Success    = {22, 163, 74},
+    Warning    = {245, 158, 11},
+    Muted      = {107, 114, 128},
+    MutedLight = {156, 163, 175},
+    CardBg     = {255, 255, 255},
+    Border     = {229, 231, 235},
+    Text       = {17, 24, 39},
+    BtnDefault = {249, 250, 251},
+    DayOff     = {229, 231, 235},
+    DayOn      = {37, 99, 235},
+    EnableOn   = {22, 163, 74},
+    EnableOff  = {220, 38, 38},
+  }
+
+  local PluginWidth = 400
+  local HeaderHeight = 110
+  local HeaderPad = 10
+  local CardPadding = 14
+  local CardGap = 10
+  local BtnGap = 4
+  local PillRadius = 4  -- buttons are squared; cards keep CornerRadius 16
+  local LogoW, LogoH, LogoY = 124, 84, 13  -- stacked logo; X derived in the header block
+
+  -- Q-SYS layout keys: the bare name at Count=1, "Name Index" above it.
+  local function CtrlName(baseName, index)
+    if count == 1 then return baseName end
+    return baseName .. " " .. index
+  end
+
+  local function Card(x, y, w, h, title)
+    graphics[#graphics + 1] = {
+      Type = "GroupBox", Text = "",
+      Position = {x, y}, Size = {w, h},
+      CornerRadius = 16, StrokeWidth = 1,
+      StrokeColor = Colors.Border, Fill = Colors.CardBg
+    }
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = title,
+      Position = {x + CardPadding, y + 10}, Size = {w - CardPadding * 2, 16},
+      FontSize = 10, HTextAlign = "Left", Color = Colors.Muted
+    }
+    return y + 32
+  end
+
+  graphics[#graphics + 1] = {
+    Type = "GroupBox", Text = "",
+    Position = {0, 0}, Size = {PluginWidth, HeaderHeight},
+    CornerRadius = 0, StrokeWidth = 0,
+    Fill = Colors.CardBg
+  }
+
+  -- `//` not `/`: QDS rejects float coordinates and Lua 5.3's `/` always yields one.
+  graphics[#graphics + 1] = {
+    Type = "Svg",
+    Image = FRESH_LOGO_STACKED,
+    Position = {(PluginWidth - LogoW) // 2, LogoY},
+    Size = {LogoW, LogoH}
+  }
+
+  -- WARNING: keep the name on two lines. On one it runs into the centred logo's own
+  -- wordmark and the two read as a single sentence.
+  local nameUpper = string.upper(GetPrettyName(props))
+  local nameL1, nameL2 = nameUpper:match("^(%S+)%s+(.+)$")
+  local NameGutterW = ((PluginWidth - LogoW) // 2) - HeaderPad
+  if nameL2 then
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = nameL1,
+      Position = {HeaderPad, 68}, Size = {NameGutterW, 15},
+      FontSize = 14, IsBold = true, HTextAlign = "Left", Color = Colors.Text
+    }
+  else
+    nameL2 = nameUpper   -- one-word name: one line
+  end
+  graphics[#graphics + 1] = {
+    Type = "Label",
+    Text = nameL2,
+    Position = {HeaderPad, 83},
+    Size = {NameGutterW, 15},
+    FontSize = 14, IsBold = true, HTextAlign = "Left",
+    Color = Colors.Text
+  }
+
+  graphics[#graphics + 1] = {
+    Type = "Label",
+    Text = "v" .. PluginInfo.Version,
+    Position = {HeaderPad, 99},
+    Size = {NameGutterW, 9},
+    FontSize = 7, HTextAlign = "Left",
+    Color = Colors.MutedLight
+  }
+
+  graphics[#graphics + 1] = {
+    Type = "Label", Text = "CURRENT TIME",
+    Position = {PluginWidth - 120 - HeaderPad, 68}, Size = {120, 10},
+    FontSize = 8, HTextAlign = "Right", Color = Colors.Muted
+  }
+  layout["Current_Time"] = {
+    PrettyName = "Current Time",
+    Style = "Text",
+    Position = {PluginWidth - 120 - HeaderPad, 80},
+    Size = {120, 22},
+    FontSize = 14, IsBold = true,
+    HTextAlign = "Right",
+    Color = {255, 255, 255},      -- blends into the white header
+    TextColor = {0, 0, 0},
+    StrokeWidth = 0, CornerRadius = 2, Margin = 2,
+    IsReadOnly = true
+  }
+
+  layout["Status"] = {
+    PrettyName = "Status",
+    Style = "Text",
+    Position = {0, HeaderHeight},
+    Size = {PluginWidth, 24},
+    FontSize = 10,
+    HTextAlign = "Center",
+    CornerRadius = 0,
+    Margin = 2,
+    IsReadOnly = true
+  }
+
+  local currentPage = props["page_index"].Value
+
+  if currentPage == 1 then
+  local BodyStartY = HeaderHeight + 24 + CardGap
+  local ContentX = HeaderPad
+  local CardWidth = PluginWidth - (HeaderPad * 2)
+  local CardHeight = 150  -- summary ends at rel 140, plus 10 bottom pad
+  local dayNames = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+
+  for i = 1, count do
+    local cardY = BodyStartY + (i - 1) * (CardHeight + CardGap)
+    local row = Card(ContentX, cardY, CardWidth, CardHeight, "SCHEDULE " .. i)
+
+    local enableW = 60
+    local dropW = 60
+    local trigW = 70
+    local rowH = 30
+    local innerX = ContentX + CardPadding
+    local innerW = CardWidth - (CardPadding * 2)
+    local trigX = innerX + innerW - trigW
+
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = "Enable",
+      Position = {innerX, row - 4}, Size = {enableW, 12},
+      FontSize = 8, HTextAlign = "Center", Color = Colors.Muted
+    }
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = "Hour",
+      Position = {innerX + enableW + BtnGap, row - 4}, Size = {dropW, 12},
+      FontSize = 8, HTextAlign = "Center", Color = Colors.Muted
+    }
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = "Minute",
+      Position = {innerX + enableW + dropW + BtnGap * 2, row - 4}, Size = {dropW, 12},
+      FontSize = 8, HTextAlign = "Center", Color = Colors.Muted
+    }
+
+    local nameX = innerX + enableW + dropW * 2 + BtnGap * 3
+    local nameW = trigX - nameX - BtnGap
+
+    graphics[#graphics + 1] = {
+      Type = "Label", Text = "Schedule Name",
+      Position = {nameX, row - 4}, Size = {nameW, 12},
+      FontSize = 8, HTextAlign = "Center", Color = Colors.Muted
+    }
+
+    layout[CtrlName("Enable", i)] = {
+      PrettyName = "Schedule " .. i .. "~Enable",
+      Style = "Button", Legend = "ON",
+      Position = {innerX, row + 8}, Size = {enableW, rowH},
+      CornerRadius = PillRadius,
+      Color = Colors.EnableOn,
+      UnlinkOffColor = true,
+      OffColor = Colors.EnableOff
+    }
+
+    layout[CtrlName("Hour", i)] = {
+      PrettyName = "Schedule " .. i .. "~Hour",
+      Style = "ComboBox",
+      Position = {innerX + enableW + BtnGap, row + 8}, Size = {dropW, rowH},
+      CornerRadius = 2, Margin = 2
+    }
+
+    layout[CtrlName("Minute", i)] = {
+      PrettyName = "Schedule " .. i .. "~Minute",
+      Style = "ComboBox",
+      Position = {innerX + enableW + dropW + BtnGap * 2, row + 8}, Size = {dropW, rowH},
+      CornerRadius = 2, Margin = 2
+    }
+
+    layout[CtrlName("Schedule_Name", i)] = {
+      PrettyName = "Schedule " .. i .. "~Name",
+      Style = "Text",
+      Position = {nameX, row + 8}, Size = {nameW, rowH},
+      CornerRadius = 2, Margin = 2
+    }
+
+    layout[CtrlName("Trigger", i)] = {
+      PrettyName = "Schedule " .. i .. "~Trigger",
+      Style = "Button", Legend = "Trigger",
+      Position = {trigX, row + 8}, Size = {trigW, rowH},
+      CornerRadius = PillRadius,
+      Color = Colors.Primary
+    }
+
+    local dayRowY = row + rowH + 20
+    local totalDayGaps = BtnGap * 6
+    local dayBtnW = math.floor((innerW - totalDayGaps) / 7)
+    local dayExtraPixels = innerW - (dayBtnW * 7 + totalDayGaps)
+
+    for d, day in ipairs(dayNames) do
+      local dayX = innerX + (d - 1) * (dayBtnW + BtnGap) + math.min(d - 1, dayExtraPixels)
+      local thisW = dayBtnW + (d <= dayExtraPixels and 1 or 0)
+      layout[CtrlName(day, i)] = {
+        PrettyName = "Schedule " .. i .. "~" .. day,
+        Style = "Button", Legend = day,
+        Position = {dayX, dayRowY}, Size = {thisW, 34},
+        CornerRadius = PillRadius,
+        Color = Colors.DayOn,
+        UnlinkOffColor = true,
+        OffColor = Colors.DayOff
+      }
+    end
+
+    local summaryY = dayRowY + 34 + 6
+    layout[CtrlName("Schedule_Summary", i)] = {
+      PrettyName = "Schedule " .. i .. "~Summary",
+      Style = "Text",
+      Position = {innerX, summaryY}, Size = {innerW, 18},
+      FontSize = 9, HTextAlign = "Left",
+      CornerRadius = 2, Margin = 2,
+      Color = Colors.MutedLight
+    }
+  end
+
+  elseif currentPage == 2 then
+    local BodyStartY = HeaderHeight + 24 + CardGap
+    local ContentX = HeaderPad
+    local CardWidth = PluginWidth - (HeaderPad * 2)
+    local innerX = ContentX + CardPadding
+    local innerW = CardWidth - (CardPadding * 2)
+    local rowH = 30
+
+    local rotH = 128  -- D/H/M combos end at rel 118, plus 10 bottom pad
+    local rRow = Card(ContentX, BodyStartY, CardWidth, rotH, "BACKUP ROTATION")
+    local rescanW = 70
+    local bankW = innerW - rescanW - BtnGap
+    graphics[#graphics + 1] = { Type = "Label", Text = "Snapshot Bank",
+      Position = {innerX, rRow - 4}, Size = {bankW, 12}, FontSize = 8, HTextAlign = "Left", Color = Colors.Muted }
+    layout["Backup_Component"] = { PrettyName = "Backup~Snapshot Bank", Style = "ComboBox",
+      Position = {innerX, rRow + 8}, Size = {bankW, rowH}, CornerRadius = 2, Margin = 2 }
+    layout["Backup_Rescan"] = { PrettyName = "Backup~Rescan", Style = "Button", Legend = "Rescan",
+      Position = {innerX + bankW + BtnGap, rRow + 8}, Size = {rescanW, rowH}, CornerRadius = PillRadius, Color = Colors.BtnDefault }
+    local dhmY = rRow + 8 + rowH + 18  -- labels at dhmY-12 clear the bank combo by 6px
+    local combo3W = math.floor((innerW - BtnGap * 2) / 3)
+    local dayX, hourX, minX = innerX, innerX + combo3W + BtnGap, innerX + (combo3W + BtnGap) * 2
+    graphics[#graphics + 1] = { Type = "Label", Text = "Day", Position = {dayX, dhmY - 12}, Size = {combo3W, 10}, FontSize = 8, HTextAlign = "Left", Color = Colors.Muted }
+    graphics[#graphics + 1] = { Type = "Label", Text = "Hour", Position = {hourX, dhmY - 12}, Size = {combo3W, 10}, FontSize = 8, HTextAlign = "Left", Color = Colors.Muted }
+    graphics[#graphics + 1] = { Type = "Label", Text = "Minute", Position = {minX, dhmY - 12}, Size = {combo3W, 10}, FontSize = 8, HTextAlign = "Left", Color = Colors.Muted }
+    layout["Backup_Day"]    = { PrettyName = "Backup~Day",    Style = "ComboBox", Position = {dayX, dhmY},  Size = {combo3W, rowH}, CornerRadius = 2, Margin = 2 }
+    layout["Backup_Hour"]   = { PrettyName = "Backup~Hour",   Style = "ComboBox", Position = {hourX, dhmY}, Size = {combo3W, rowH}, CornerRadius = 2, Margin = 2 }
+    layout["Backup_Minute"] = { PrettyName = "Backup~Minute", Style = "ComboBox", Position = {minX, dhmY},  Size = {combo3W, rowH}, CornerRadius = 2, Margin = 2 }
+
+    local slotRowH = 34
+    local slotsY = BodyStartY + rotH + CardGap
+    local slotsCardH = 32 + slots * slotRowH + 8
+    local sRow = Card(ContentX, slotsY, CardWidth, slotsCardH, "BACKUP SLOTS (weekly rotation)")
+    local enW, saveW = 54, 74
+    local lastW = innerW - enW - saveW - 90 - BtnGap * 3
+    for i = 1, slots do
+      local ry = sRow + (i - 1) * slotRowH
+      graphics[#graphics + 1] = { Type = "Label", Text = "Slot " .. i,
+        Position = {innerX, ry + 8}, Size = {90, 16}, FontSize = 9, HTextAlign = "Left", Color = Colors.Text }
+      layout["Backup_Enable " .. i] = { PrettyName = "Backup~Slot " .. i .. " Enable", Style = "Button", Legend = "ON",
+        Position = {innerX + 90 + BtnGap, ry + 6}, Size = {enW, 26}, CornerRadius = PillRadius,
+        Color = Colors.EnableOn, UnlinkOffColor = true, OffColor = Colors.EnableOff }
+      layout["Backup_Last_Saved " .. i] = { PrettyName = "Backup~Slot " .. i .. " Last Saved", Style = "Text",
+        Position = {innerX + 90 + enW + BtnGap * 2, ry + 6}, Size = {lastW, 26}, FontSize = 9, HTextAlign = "Left",
+        CornerRadius = 2, Margin = 2, Color = Colors.MutedLight, IsReadOnly = true }
+      layout["Backup_Save_Now " .. i] = { PrettyName = "Backup~Slot " .. i .. " Save Now", Style = "Button", Legend = "Save",
+        Position = {innerX + innerW - saveW, ry + 6}, Size = {saveW, 26}, CornerRadius = PillRadius, Color = Colors.Primary }
+    end
+  end
+
+  return layout, graphics
+end
+
+if Controls then
+  local VerboseMode = Properties["Debug_Level"].Value == "Verbose"
+  local PLUGIN_NAME = "Simple Scheduler"
+
+  local function Log(msg)
+    print("[" .. PLUGIN_NAME .. "] " .. msg)
+  end
+
+  local function DebugLog(msg)
+    print("[" .. PLUGIN_NAME .. "] [Debug] " .. msg)
+  end
+
+  local function VerboseLog(msg)
+    if VerboseMode then
+      print("[" .. PLUGIN_NAME .. "] [Verbose] " .. msg)
+    end
+  end
+
+  local SCHEDULE_COUNT = Properties["Schedule_Count"].Value
+  local DAY_NAMES = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+
+  -- Q-SYS hands back a bare control at Count=1 and an indexed table above it.
+  local function Ctrl(name, index)
+    if SCHEDULE_COUNT == 1 then return Controls[name] end
+    return Controls[name][index]
+  end
+
+  local HOUR_CHOICES = {}
+  for h = 0, 23 do HOUR_CHOICES[#HOUR_CHOICES + 1] = string.format("%02d", h) end
+  local MINUTE_CHOICES = {}
+  for m = 0, 55, 5 do MINUTE_CHOICES[#MINUTE_CHOICES + 1] = string.format("%02d", m) end
+
+  Log("=== Fresh AV Labs Simple Scheduler v" .. PluginInfo.Version .. " ===")
+  Log("Schedule Count: " .. SCHEDULE_COUNT)
+  Log("Debug Level: " .. Properties["Debug_Level"].Value)
+
+  -- Two owners, one renderer. Nothing else may write Status.
+  BackupAdvisory = ""
+  BackupSaveFault = ""
+  local function ApplyBackupStatus()
+    if BackupSaveFault ~= "" then
+      Controls["Status"].Value = 2
+      Controls["Status"].String = BackupSaveFault
+    elseif BackupAdvisory ~= "" then
+      Controls["Status"].Value = 1
+      Controls["Status"].String = BackupAdvisory
+    else
+      Controls["Status"].Value = 0
+      Controls["Status"].String = ""   -- framework renders "OK"; never the literal
+    end
+  end
+
+  ApplyBackupStatus()
+  Controls["Current_Time"].String = os.date("%H:%M:%S")
+
+  for i = 1, SCHEDULE_COUNT do
+    local hourCtrl = Ctrl("Hour", i)
+    local minCtrl = Ctrl("Minute", i)
+
+    hourCtrl.Choices = HOUR_CHOICES
+    minCtrl.Choices = MINUTE_CHOICES
+
+    if hourCtrl.String == "" then hourCtrl.String = "00" end
+    if minCtrl.String == "" then minCtrl.String = "00" end
+  end
+
+  local function UpdateSummary(idx)
+    local hourCtrl = Ctrl("Hour", idx)
+    local minCtrl = Ctrl("Minute", idx)
+    local enableCtrl = Ctrl("Enable", idx)
+    local summaryCtrl = Ctrl("Schedule_Summary", idx)
+
+    if not enableCtrl.Boolean then
+      summaryCtrl.String = "Disabled"
+      return
+    end
+
+    local h = tonumber(hourCtrl.String) or 0
+    local m = tonumber(minCtrl.String) or 0
+    local timeStr = hourCtrl.String .. ":" .. minCtrl.String
+
+    local activeDays = {}
+    for _, day in ipairs(DAY_NAMES) do
+      local dayCtrl = Ctrl(day, idx)
+      if dayCtrl.Boolean then
+        activeDays[#activeDays + 1] = day
+      end
+    end
+
+    if #activeDays == 0 then
+      summaryCtrl.String = timeStr .. " -- No days selected"
+    elseif #activeDays == 7 then
+      summaryCtrl.String = timeStr .. " -- Every day"
+    else
+      summaryCtrl.String = timeStr .. " -- " .. table.concat(activeDays, ", ")
+    end
+  end
+
+  -- CRITICAL: the tick shares one Lua thread with every script in the design. Cache on
+  -- change, never poll, and allocate nothing per tick.
+  SchedCache = {}
+  for i = 1, SCHEDULE_COUNT do
+    SchedCache[i] = { hour = -1, min = -1, days = {}, enabled = false, fired = false }
+    for d = 1, 7 do SchedCache[i].days[d] = false end
+  end
+
+  local function CacheSchedule(idx)
+    local c = SchedCache[idx]
+    c.hour = tonumber(Ctrl("Hour", idx).String) or -1
+    c.min = tonumber(Ctrl("Minute", idx).String) or -1
+    c.enabled = Ctrl("Enable", idx).Boolean
+    for d = 1, 7 do
+      c.days[d] = Ctrl(DAY_NAMES[d], idx).Boolean
+    end
+    DebugLog("Cache sched " .. idx .. ": " .. (c.hour >= 0 and c.hour or 0) .. ":" .. (c.min >= 0 and c.min or 0) .. " en=" .. tostring(c.enabled))
+  end
+
+  for i = 1, SCHEDULE_COUNT do
+    local idx = i
+    Ctrl("Hour", i).EventHandler = function() CacheSchedule(idx); UpdateSummary(idx) end
+    Ctrl("Minute", i).EventHandler = function() CacheSchedule(idx); UpdateSummary(idx) end
+    Ctrl("Enable", i).EventHandler = function() CacheSchedule(idx); UpdateSummary(idx) end
+    for _, day in ipairs(DAY_NAMES) do
+      Ctrl(day, i).EventHandler = function() CacheSchedule(idx); UpdateSummary(idx) end
+    end
+    CacheSchedule(i)
+    UpdateSummary(i)
+  end
+
+  local BACKUP_SLOTS = BackupSlotCount(Properties)
+  -- WARNING: seeded from the PERSISTED selection, so a restart is never an empty -> selected
+  -- transition and cannot re-arm a slot the operator turned off.
+  local BackupSelPrev = Controls["Backup_Component"].String
+  BackupComp = nil
+  BackupSlotCapacity = nil   -- max save.N index; nil = could not be read
+  BackupScanNames = {}       -- last discovery result, sorted
+  BackupScanOk = false       -- true only after a scan that COMPLETED; see ValidateBackup
+  BackupCache = { wd = nil, hour = nil, min = nil }  -- weekday 1-7, hour, minute
+  BackupLastEpoch = {}                                -- per slot: epoch, nil = never saved
+
+  -- Seed only when empty, so operator-set values survive a restart.
+  Controls["Backup_Day"].Choices = DAY_NAMES
+  Controls["Backup_Hour"].Choices = HOUR_CHOICES
+  Controls["Backup_Minute"].Choices = MINUTE_CHOICES
+  if Controls["Backup_Day"].String == "" then Controls["Backup_Day"].String = "Sun" end
+  if Controls["Backup_Hour"].String == "" then Controls["Backup_Hour"].String = "03" end
+  if Controls["Backup_Minute"].String == "" then Controls["Backup_Minute"].String = "00" end
+
+  local function InLastScan(sel)
+    for _, n in ipairs(BackupScanNames) do if n == sel then return true end end
+    return false
+  end
+
+  -- The current selection stays in Choices even when a scan no longer lists it: a bank that is
+  -- offline is not a bank the operator un-picked.
+  -- WARNING: `dropMissing` reverses that, and ONLY the Rescan handler may pass it. Startup must
+  -- never drop a selection -- a reboot while a bank is briefly invisible would discard a
+  -- commissioned config with nothing on screen to say what it was.
+  local function DiscoverBanks(dropMissing)
+    local ok, comps = pcall(Component.GetComponents)
+    if not ok or type(comps) ~= "table" then
+      Log("Snapshot discovery failed; leaving bank list + selection unchanged")
+      return
+    end
+    local names = {}
+    for _, c in ipairs(comps) do
+      if type(c) == "table" and c.Type == "snapshot_controller" and type(c.Name) == "string" then
+        names[#names + 1] = c.Name
+      end
+    end
+    table.sort(names)
+    BackupScanNames = names
+    BackupScanOk = true
+    local sel = Controls["Backup_Component"].String
+    if sel ~= "" and dropMissing and not InLastScan(sel) then
+      -- WARNING: BackupSelPrev is deliberately NOT reset here. Once the slots have been armed
+      -- the plugin never re-arms them, so a bank going missing must not turn a protected slot
+      -- back on when the operator picks its replacement.
+      Log("Rescan: bank '" .. sel .. "' is no longer in the design; clearing the selection")
+      Controls["Backup_Component"].String = ""
+      sel = ""
+    end
+    local list = {}
+    for _, n in ipairs(names) do list[#list + 1] = n end
+    if sel ~= "" then
+      local present = false
+      for _, n in ipairs(list) do if n == sel then present = true break end end
+      if not present then list[#list + 1] = sel end
+    end
+    Controls["Backup_Component"].Choices = list
+    if sel ~= "" then Controls["Backup_Component"].String = sel end
+    Log("Snapshot discovery: " .. #names .. " bank(s) found")
+  end
+
+  local function ResolveBackupComp()
+    local sel = Controls["Backup_Component"].String
+    if sel == "" then BackupComp = nil; BackupSlotCapacity = nil; return end
+    local ok, comp = pcall(Component.New, sel)
+    BackupComp = (ok and comp) or nil
+    BackupSlotCapacity = nil
+    if BackupComp then
+      local ok2, list = pcall(Component.GetControls, BackupComp)
+      if ok2 and type(list) == "table" then
+        local cap = 0
+        for _, cc in ipairs(list) do
+          local nm = (type(cc) == "table") and cc.Name or nil
+          if type(nm) == "string" then
+            local n = nm:match("^save%.(%d+)$")
+            if n then local ni = tonumber(n); if ni and ni > cap then cap = ni end end
+          end
+        end
+        if cap > 0 then BackupSlotCapacity = cap
+        else Log("Snapshot bank '" .. sel .. "': GetControls shape unrecognized; capacity unknown (saves proceed)") end
+      else
+        Log("Snapshot bank '" .. sel .. "': GetControls unavailable; capacity unknown (saves proceed)")
+      end
+    end
+  end
+
+  -- Rebuilds the advisory from scratch, never from its previous value. Never runs in the tick.
+  local function ValidateBackup()
+    local anyEnabled = false
+    for i = 1, BACKUP_SLOTS do
+      if Controls["Backup_Enable"][i].Boolean then anyEnabled = true break end
+    end
+    local sel = Controls["Backup_Component"].String
+    BackupAdvisory = ""
+    -- WARNING: gated on anyEnabled, and the slots ship OFF. Drop that gate and every
+    -- untouched instance reads Compromised.
+    if anyEnabled and sel == "" then
+      BackupAdvisory = "No snapshot bank selected"
+    elseif sel ~= "" and (BackupComp == nil or (BackupScanOk and not InLastScan(sel))) then
+      -- Never put a bank name in a status string: the bar is one line and clips.
+      -- WARNING: do NOT reduce this to `BackupComp == nil`. Component.New still returns a
+      -- handle for a bank whose Script Access was set to None, so the scan is the only
+      -- evidence that it went away.
+      BackupAdvisory = "Bank not found or not script-accessible"
+      local why
+      if BackupComp ~= nil then
+        why = "absent from the last scan but Component.New still returns a handle — renamed, deleted, or Script Access set to None"
+      elseif InLastScan(sel) then
+        why = "in last scan but Component.New failed — check Script Access"
+      else
+        why = "absent from last scan"
+      end
+      Log("Backup validation: bank '" .. sel .. "' unusable (" .. why .. ")")
+    elseif sel ~= "" and BackupSlotCapacity ~= nil and BackupSlotCapacity < BACKUP_SLOTS then
+      local exceed = false
+      for i = 1, BACKUP_SLOTS do
+        if Controls["Backup_Enable"][i].Boolean and i > BackupSlotCapacity then exceed = true break end
+      end
+      if exceed then
+        BackupAdvisory = "Bank has only " .. BackupSlotCapacity ..
+          " of " .. BACKUP_SLOTS .. " slots; needs a bigger bank"
+      end
+    end
+    ApplyBackupStatus()
+  end
+
+  -- Cache the backup window as NUMERIC values (never string-vs-number in the tick).
+  local function CacheBackupWindow()
+    local dayStr = Controls["Backup_Day"].String
+    local wd = nil
+    for d = 1, 7 do if DAY_NAMES[d] == dayStr then wd = d break end end
+    BackupCache.wd = wd
+    BackupCache.hour = tonumber(Controls["Backup_Hour"].String)
+    BackupCache.min = tonumber(Controls["Backup_Minute"].String)
+    if wd == nil then Log("Backup window day '" .. tostring(dayStr) .. "' unrecognized; window disabled until set") end
+  end
+
+  -- Startup-only parse of each slot's Last Saved string → epoch (isdst=false).
+  local function ParseLastSavedEpochs()
+    for i = 1, BACKUP_SLOTS do
+      local s = Controls["Backup_Last_Saved"][i].String
+      if type(s) == "string" and s ~= "" then
+        local Y, M, D, H, MIN = s:match("^(%d+)%-(%d+)%-(%d+) (%d+):(%d+)$")
+        if Y then
+          BackupLastEpoch[i] = os.time{year=tonumber(Y), month=tonumber(M), day=tonumber(D),
+            hour=tonumber(H), min=tonumber(MIN), sec=0, isdst=false}
+        else
+          BackupLastEpoch[i] = nil
+          Log("Backup slot " .. i .. " Last Saved unparseable ('" .. s .. "'); treating as never saved")
+        end
+      else
+        BackupLastEpoch[i] = nil
+      end
+    end
+  end
+
+  -- WARNING: these two stay GLOBAL -- the harness asserts them directly.
+  function LastFiredSlot()
+    local last, lastEpoch = nil, nil
+    for i = 1, BACKUP_SLOTS do
+      local e = BackupLastEpoch[i]
+      -- `>=` NOT `>`: the scan ascends, so >= makes the HIGHEST index win a tie.
+      if e ~= nil and (lastEpoch == nil or e >= lastEpoch) then last, lastEpoch = i, e end
+    end
+    return last
+  end
+
+  -- Eligibility deliberately excludes "bank resolved", so a broken bank retries the same
+  -- slot rather than burning through the rotation.
+  function NextRotationSlot()
+    local start = LastFiredSlot() or 0
+    for k = 1, BACKUP_SLOTS do
+      local i = ((start + k - 1) % BACKUP_SLOTS) + 1
+      if Controls["Backup_Enable"][i].Boolean
+         and (BackupSlotCapacity == nil or i <= BackupSlotCapacity) then
+        return i
+      end
+    end
+    return nil
+  end
+
+  -- WARNING: the body below reassigns this upvalue bare. A second `local` there would leave
+  -- every closure that captured the stub pointing at a no-op, silently.
+  local DoBackupSave = function(_, _) end
+
+  DoBackupSave = function(slot, reason)
+    -- No bank is an advisory state, not a fault: never write Value 2 here.
+    if BackupComp == nil then
+      Log("Backup slot " .. slot .. " skipped: no resolved snapshot bank")
+      return
+    end
+    -- The only place skip-beyond-capacity is enforced.
+    if BackupSlotCapacity ~= nil and slot > BackupSlotCapacity then
+      Log("Backup slot " .. slot .. " skipped: bank '" .. Controls["Backup_Component"].String ..
+        "' has only " .. BackupSlotCapacity .. " slots")
+      return
+    end
+    local ok, err = pcall(function() BackupComp["save." .. slot]:Trigger() end)
+    if ok then
+      Controls["Backup_Last_Saved"][slot].String = os.date("%Y-%m-%d %H:%M")
+      BackupLastEpoch[slot] = os.time()   -- live epoch, no re-parse
+      Log("Backup slot " .. slot .. " saved to bank '" .. Controls["Backup_Component"].String .. "' (" .. reason .. ")")
+      BackupSaveFault = ""                -- clear ONLY the fault; advisory untouched
+      ApplyBackupStatus()
+    else
+      if BackupSlotCapacity == nil then
+        -- Capacity unreadable: this fails every window and parks the rotation here.
+        BackupSaveFault = "Backup save failed: slot " .. slot ..
+          " (bank may have <" .. BACKUP_SLOTS .. " slots)"
+      else
+        BackupSaveFault = "Backup save failed: slot " .. slot
+      end
+      Log("Backup slot " .. slot .. " save FAILED: " .. tostring(err))
+      ApplyBackupStatus()
+    end
+  end
+
+  -- Arms slots beyond the bank's capacity too: asking for more slots than the bank holds is
+  -- exactly what the undersized-bank advisory is for.
+  local function ArmAllBackupSlots()
+    for i = 1, BACKUP_SLOTS do Controls["Backup_Enable"][i].Boolean = true end
+    Log("Backup slots armed: first bank selection (" .. BACKUP_SLOTS .. " slots)")
+  end
+
+  -- WARNING: the arm fires only on empty -> selected, and only from this handler. Move it into
+  -- ResolveBackupComp() and every restart and Rescan re-arms a slot the operator turned off to
+  -- protect a snapshot, and the weekly rotation then overwrites it.
+  Controls["Backup_Component"].EventHandler = function()
+    local sel = Controls["Backup_Component"].String
+    if BackupSelPrev == "" and sel ~= "" then ArmAllBackupSlots() end
+    BackupSelPrev = sel
+    ResolveBackupComp(); ValidateBackup()
+  end
+  Controls["Backup_Rescan"].EventHandler = function()
+    DiscoverBanks(true); ResolveBackupComp(); ValidateBackup()
+    -- Unconditional. Without it a Rescan that changed nothing and a Rescan that never ran
+    -- print identically, which is exactly how this bug was misread once.
+    Log("Rescan complete: " .. #BackupScanNames .. " live bank(s); selection '" ..
+      Controls["Backup_Component"].String .. "'; advisory '" .. BackupAdvisory .. "'")
+  end
+  for i = 1, BACKUP_SLOTS do
+    local idx = i
+    Controls["Backup_Enable"][i].EventHandler = function() ValidateBackup() end
+    Controls["Backup_Save_Now"][i].EventHandler = function() DoBackupSave(idx, "manual") end
+  end
+
+  Controls["Backup_Day"].EventHandler = function() CacheBackupWindow() end
+  Controls["Backup_Hour"].EventHandler = function() CacheBackupWindow() end
+  Controls["Backup_Minute"].EventHandler = function() CacheBackupWindow() end
+
+  DiscoverBanks()
+  ResolveBackupComp()
+  ParseLastSavedEpochs()
+  CacheBackupWindow()
+  ValidateBackup()
+
+  -- Must stay after the startup sequence above, or every value below reads empty.
+  Log("Backup slots: " .. BACKUP_SLOTS)
+  Log("Backup window: " .. Controls["Backup_Day"].String .. " " ..
+    Controls["Backup_Hour"].String .. ":" .. Controls["Backup_Minute"].String ..
+    " | bank: '" .. Controls["Backup_Component"].String .. "'" ..
+    " | capacity: " .. tostring(BackupSlotCapacity or "unknown"))
+  -- "never" and "none" are different faults. Do not collapse them into one string.
+  local bannerLast, bannerNext = LastFiredSlot(), NextRotationSlot()
+  Log("Backup rotation: last fired slot " .. tostring(bannerLast or "never") ..
+    " | next slot " .. (bannerNext and tostring(bannerNext) or "none (no eligible slot)"))
+
+  -- CRITICAL: the Timer and its cross-tick state stay GLOBAL. A local Timer is collected
+  -- and stops with no error, and the clock just freezes.
+  CheckTimer = Timer.New()
+  LastMinuteStr = ""
+  TimeDisplay = Controls["Current_Time"]
+
+  CheckTimer.EventHandler = function()
+    local fullStr = os.date("%H:%M:%S:%w")
+    TimeDisplay.String = fullStr:sub(1, 8)  -- HH:MM:SS
+
+    local minuteKey = fullStr:sub(1, 5) .. fullStr:sub(10, 10)  -- HH:MM + weekday
+    if minuteKey == LastMinuteStr then return end
+    LastMinuteStr = minuteKey
+
+    local h = tonumber(fullStr:sub(1, 2))
+    local m = tonumber(fullStr:sub(4, 5))
+    local wd = tonumber(fullStr:sub(10, 10)) + 1  -- %w: 0=Sun, we need 1=Sun
+
+    VerboseLog("Check: " .. fullStr:sub(1,5) .. " " .. DAY_NAMES[wd])
+
+    for i = 1, SCHEDULE_COUNT do
+      local c = SchedCache[i]
+      if c.enabled and c.days[wd] and c.hour == h and c.min == m then
+        if not c.fired then
+          c.fired = true
+          Ctrl("Trigger", i).Boolean = true
+          Log("Schedule " .. i .. " FIRED at " .. fullStr:sub(1,5) .. " on " .. DAY_NAMES[wd])
+        end
+      else
+        c.fired = false
+      end
+    end
+
+    -- Rides the same minute gate as the schedules above.
+    if BackupCache.wd == wd and BackupCache.hour == h and BackupCache.min == m then
+      local slot = NextRotationSlot()
+      if slot then
+        DoBackupSave(slot, "rotation")
+      else
+        Log("Backup window fired: no eligible slot")
+      end
+    end
+  end
+  CheckTimer:Start(1)
+
+  Log("Scheduler running. Checking every 1 second.")
+
+end
