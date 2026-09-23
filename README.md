@@ -9,6 +9,9 @@ A free, open-source Q-SYS plugin that does two jobs:
 
 No licence key, no activation, no demo timer. MIT licensed.
 
+Built by [Fresh AV Labs](https://freshavlabs.com/). Product page and changelog:
+[freshavlabs.com/plugins/simple-scheduler](https://freshavlabs.com/plugins/simple-scheduler/).
+
 ---
 
 ## Install
