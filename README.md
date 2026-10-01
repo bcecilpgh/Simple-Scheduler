@@ -129,8 +129,7 @@ It is generated, assembled from separate fragments in the maintainer's working r
 comments in it are sparse by design. That changes nothing about your copy. It is ordinary Lua,
 and the MIT licence below covers it.
 
-`SimpleScheduler.qplugx` is the same plugin packaged for double-click install. Q-SYS reads
-either one. The `.qplugx` is only the more convenient way in.
+`SimpleScheduler.qplugx` is the same plugin packaged but encrypted.
 
 ---
 
